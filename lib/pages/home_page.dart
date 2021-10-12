@@ -1,8 +1,11 @@
 import 'dart:io';
 
 import 'package:bands_names/models/band.dart';
+import 'package:bands_names/services/socket_service.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:pie_chart/pie_chart.dart';
+import 'package:provider/provider.dart';
 
 class HomePage extends StatefulWidget {
   @override
@@ -10,16 +13,36 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  List<Band> bands = [
-    Band(id: '1', name: 'Metalica', votes: 5),
-    Band(id: '2', name: 'Queen', votes: 3),
-    Band(id: '3', name: 'Otro', votes: 2),
-    Band(id: '4', name: 'Melgosa band', votes: 7),
-    Band(id: '5', name: 'Caifanes', votes: 8)
-  ];
+  List<Band> bands = [];
+
+  @override
+  void initState() {
+    super.initState();
+    final socketService = Provider.of<SocketService>(context, listen: false);
+    //Escuchar cuando el servidor emita el mensaje active-band (Que actualiza el listado de bandas)
+    socketService.socket?.on('active-bands', _handleActiveBands);
+  }
+
+  _handleActiveBands(dynamic payload){
+    this.bands = (payload as List)
+        .map((band) => Band.fromMap(band))
+        .toList();
+
+    setState(() {});
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+    final socketService = Provider.of<SocketService>(context, listen: false);
+
+    socketService.socket?.off('active-bands');
+  }
 
   @override
   Widget build(BuildContext context) {
+    final socketService = Provider.of<SocketService>(context);
+
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -27,10 +50,25 @@ class _HomePageState extends State<HomePage> {
           style: TextStyle(color: Colors.black87),
         ),
         backgroundColor: Colors.white,
+        actions: [
+          Container(
+            margin: EdgeInsets.only(right: 10),
+            child: socketService.serverStatus == ServerStatus.Connecting
+                ? Icon(Icons.watch_later, color: Colors.yellow)
+                : socketService.serverStatus == ServerStatus.Offline
+                  ? Icon(Icons.offline_bolt, color: Colors.red)
+                  : Icon(Icons.check_circle, color: Colors.blue[300])
+          )
+        ],
       ),
-      body: ListView.builder(
-          itemCount: bands.length,
-          itemBuilder: (context, i) => _bandTile(bands[i])),
+      body: Column(
+        children: [
+          bands.isEmpty
+              ? Container(margin: EdgeInsets.only(top: 50), child: Center(child: CircularProgressIndicator()))
+              : _showGraph(),
+          _showBandTiles(),
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
         child: Icon(Icons.add),
         onPressed: _addNewBand,
@@ -39,10 +77,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _bandTile(Band band) {
-    return Dismissible(
-      onDismissed: (direction){
+    final socketService = Provider.of<SocketService>(context, listen: false);
 
-      },
+    return Dismissible(
+      onDismissed: (_) => socketService.emit('delete-band', {'id': band.id}),
       key: Key(band.id),
       direction: DismissDirection.startToEnd,
       background: Container(
@@ -63,6 +101,7 @@ class _HomePageState extends State<HomePage> {
           '${band.votes}',
           style: TextStyle(fontSize: 20),
         ),
+        onTap: () => socketService.socket?.emit('vote-band', {'id': band.id})
       ),
     );
   }
@@ -73,8 +112,7 @@ class _HomePageState extends State<HomePage> {
     if(Platform.isAndroid){
       return showDialog(
           context: context,
-          builder: (context){
-            return AlertDialog(
+          builder: (_) => AlertDialog(
               actions: [
                 MaterialButton(
                     child: Text('Add'),
@@ -87,14 +125,13 @@ class _HomePageState extends State<HomePage> {
               content: TextField(
                 controller: textController,
               ),
+            )
             );
-          });
     }
 
     showCupertinoDialog(
         context: context,
-        builder: (_){
-          return CupertinoAlertDialog(
+        builder: (_) => CupertinoAlertDialog(
             title: Text('New band name:'),
             content: CupertinoTextField(
               controller: textController,
@@ -111,19 +148,60 @@ class _HomePageState extends State<HomePage> {
                 onPressed: () => Navigator.pop(context),
               )
             ],
-          );
-        }
+          )
     );
 
   }
 
   _addBandToList(String name){
+    final socketService = Provider.of<SocketService>(context, listen: false);
     if(name.length > 1){
-      this.bands.add(
-          Band(id: DateTime.now().toString(), name: name, votes: 0));
-      setState(() {});
+      socketService.emit('add-band', {'name' : name});
     }
 
     Navigator.pop(context);
+  }
+
+  Widget _showBandTiles() {
+    return Expanded(
+      child: ListView.builder(
+          itemCount: bands.length,
+          itemBuilder: (context, i) => _bandTile(bands[i])),
+    );
+  }
+
+  Widget _showGraph() {
+    Map<String, double> dataMap = new Map();
+
+    bands.forEach((band) {
+      dataMap.putIfAbsent(band.name, () => band.votes.toDouble());
+    });
+
+    return Container(
+        width: double.infinity, height: 200, child: PieChart(
+      dataMap: dataMap,
+      animationDuration: Duration(milliseconds: 800),
+      chartLegendSpacing: 32,
+      chartRadius: MediaQuery.of(context).size.width / 3.2,
+      initialAngleInDegree: 0,
+      chartType: ChartType.ring,
+      ringStrokeWidth: 32,
+      centerText: "Bandas",
+      legendOptions: LegendOptions(
+        showLegendsInRow: false,
+        legendPosition: LegendPosition.right,
+        showLegends: true,
+        legendTextStyle: TextStyle(
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      chartValuesOptions: ChartValuesOptions(
+        showChartValueBackground: true,
+        showChartValues: true,
+        showChartValuesInPercentage: false,
+        showChartValuesOutside: false,
+        decimalPlaces: 1,
+      ),
+    ));
   }
 }
